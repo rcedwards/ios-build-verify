@@ -1,0 +1,19 @@
+{
+  "name": "ios-build-verify",
+  "description": "Reusable Claude Code skill for building and verifying SwiftUI iOS apps",
+  "owner": {
+    "name": "Josh Adams",
+    "email": "vermontcoder@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "ios-build-verify",
+      "source": ".",
+      "description": "Bundle for building and verifying SwiftUI iOS apps with xcodebuild, xcbeautify, and AXe-driven simulator interaction",
+      "author": {
+        "name": "Josh Adams",
+        "email": "vermontcoder@gmail.com"
+      }
+    }
+  ]
+}
