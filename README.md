@@ -12,7 +12,7 @@ A Claude Code skill that closes the agentic loop for SwiftUI iOS apps. It bundle
 
 # What This Skill Does
 
-Anthropic's [*Best Practices for Claude Code*](https://code.claude.com/docs/en/best-practices) frames the principle bluntly: *"Include tests, screenshots, or expected outputs so Claude can check itself. This is the single highest-leverage thing you can do."* Without a verification loop, the human becomes the sole feedback channel, and every mistake the agent makes commands the human's attention.
+Anthropic's [*Best Practices for Claude Code*](https://code.claude.com/docs/en/best-practices) provides this advice: *"Include tests, screenshots, or expected outputs so Claude can check itself. This is the single highest-leverage thing you can do."* Without a verification loop, the human becomes the sole feedback channel, and every mistake the agent makes commands the human's attention.
 
 `ios-build-verify` is an applied instance of that principle for SwiftUI iOS apps. It bundles two halves of the agentic loop behind named, semantically meaningful operations.
 
