@@ -9,8 +9,8 @@
     {
       "name": "ios-build-verify",
       "source": {
-        "source": "github",
-        "repo": "vermont42/ios-build-verify"
+        "source": "git",
+        "url": "https://github.com/vermont42/ios-build-verify.git"
       },
       "description": "Bundle for building and verifying SwiftUI iOS apps with xcodebuild, xcbeautify, and AXe-driven simulator interaction",
       "author": {
