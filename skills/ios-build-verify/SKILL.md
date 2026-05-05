@@ -285,11 +285,12 @@ Thin wrapper over `axe describe-ui` for whichever simulator is currently booted.
 
 ```bash
 ~/.claude/skills/ios-build-verify/scripts/describe_ui.sh | grep -A3 input_convert_month
+~/.claude/skills/ios-build-verify/scripts/describe_ui.sh --point 200,540    # per-point inspection
 ```
 
-No subtree filtering; v1 returns the full tree. Exit codes: `0` on success; `2` config missing; `3` no booted simulator.
+No-arg invocation returns the full tree (no subtree filtering). `--point x,y` describes the single element at the given logical-points coordinate (see "Per-point inspection" below). Exit codes: `0` on success; `2` config missing or malformed `--point` argument; `3` no booted simulator.
 
-**Per-point inspection (`axe describe-ui --point <x>,<y>`).** A second observation primitive worth knowing about, especially after the May 2026 GenericApp validation discovered it reaches elements the regular tree misses. The full-tree call dumps the AXTree as enumerated by AXe — but composite controls subject to the iOS 26 children-not-enumerated bug (TabView, segmented/menu/palette `Picker`, popover overlays) appear as a single root element with `children: []`, so their interior elements (tab buttons, picker segments, popover options) are invisible to full-tree traversal. `axe describe-ui --point <x>,<y> --udid <UDID>` queries the element under the given screen coordinate directly, returning its `AXLabel`, `AXValue`, `role`, `subrole`, and `AXFrame` even when the regular tree hides it. For segmented Pickers, `--point` aimed at a segment center returns the segment's selected state (`AXValue: 1` for selected, `0` for unselected) — the canonical verify path documented in `verify_segment.sh` below. The skill doesn't currently wrap `--point` as its own script (the call is one line and the use cases vary), but `verify_segment.sh` composes it for the most common pattern.
+**Per-point inspection (`describe_ui.sh --point <x>,<y>`).** A second observation primitive worth knowing about, especially after the May 2026 GenericApp validation discovered it reaches elements the regular tree misses. The full-tree call dumps the AXTree as enumerated by AXe — but composite controls subject to the iOS 26 children-not-enumerated bug (TabView, segmented/menu/palette `Picker`, popover overlays) appear as a single root element with `children: []`, so their interior elements (tab buttons, picker segments, popover options) are invisible to full-tree traversal. `describe_ui.sh --point <x>,<y>` queries the element under the given screen coordinate directly (UDID resolution is internal), returning its `AXLabel`, `AXValue`, `role`, `subrole`, and `AXFrame` even when the regular tree hides it. For segmented Pickers, `--point` aimed at a segment center returns the segment's selected state (`AXValue: 1` for selected, `0` for unselected) — the canonical verify path documented in `verify_segment.sh` below. The same per-point primitive backs `tap_xy.sh --verify-target` (a guarded coordinate tap that pre-checks the AXLabel under the target point before dispatching) and `verify_segment.sh`'s segment-center lookup. Coordinates are logical points, not pixels.
 
 ### `scripts/terminate_app.sh`
 
@@ -328,9 +329,12 @@ Tap raw coordinates (points, origin top-left). Fallback for the iOS 26 Tab bar a
 
 ```bash
 ~/.claude/skills/ios-build-verify/scripts/tap_xy.sh 287 822
+~/.claude/skills/ios-build-verify/scripts/tap_xy.sh 200 540 --verify-target "Not Now"
 ```
 
-Exit codes: `0` on dispatch; `2` config missing or non-numeric input; `3` no booted simulator. **AXe is HID dispatch, not behavioral assertion** — `tap_xy.sh 5000 5000` exits 0 even though the tap lands off-screen. Verification of the tap's behavioral effect must compose with a follow-up `describe_ui.sh` to assert state change.
+Optional `--verify-target <expected-axlabel>` pre-queries the element under (x,y) via `describe_ui.sh --point` and refuses to tap unless the actual `AXLabel` matches. Catches the "off-by-pixel" failure mode where the gesture dispatches successfully but lands on the wrong element — the May 2026 Konjugieren audit-validation session hit this when an agent-estimated coordinate (200, 425) struck the "Enjoying Konjugieren?" heading `StaticText` instead of the "Not Now" `Button` two rows below; `tap_xy.sh` reported a successful gesture and the bug surfaced only at the next failed verify. Optional second flag `--verify-role <role>` disambiguates when the same AXLabel appears across roles (a `Button` and a `StaticText` both labeled "Done"); pass the role string exactly as `describe_ui.sh --point x,y` reports it. End-to-end gating-recovery composition: `screenshot.sh launch-fail` (capture the modal), `describe_ui.sh --point 200,540` (confirm the dismiss button is at this point), `tap_xy.sh 200 540 --verify-target "Not Now"` (guarded dispatch).
+
+Exit codes: `0` on dispatch; `2` config missing or non-numeric input; `3` no booted simulator; `8` `--verify-target` / `--verify-role` mismatch (no tap dispatched; the actual `AXLabel`, role, and `AXFrame` under the coordinate are written to stderr for diagnosis). **AXe is HID dispatch, not behavioral assertion** — `tap_xy.sh 5000 5000` exits 0 even though the tap lands off-screen, unless `--verify-target` is set to constrain dispatch by the pre-queried element. Verification of the tap's behavioral *effect* (post-tap state change) still composes with a follow-up `describe_ui.sh` regardless.
 
 ### `scripts/tap_tab.sh`
 
