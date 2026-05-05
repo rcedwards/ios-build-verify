@@ -162,7 +162,7 @@ Behavior on untested configurations (Sonnet, Haiku, non-Anthropic models, IDE-em
 
 # Deep Dive
 
-An extremely deep dive on this skill's development and philosphy is available [here](https://racecondition.software/blog/ios-build-verify/).
+An extremely deep dive on this skill's development and philosophy is available [here](https://racecondition.software/blog/ios-build-verify/).
 
 # Acknowledgments
 
