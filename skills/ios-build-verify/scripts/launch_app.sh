@@ -111,5 +111,16 @@ ERR_MSG="error: $APP_NAME launched but $FIRST_SCREEN_ID never appeared in descri
 if [[ -n "${ONBOARDING_DISMISS_LABEL:-}" && "$DISMISSED_ONBOARDING" -eq 0 ]]; then
   ERR_MSG+=" Onboarding dismiss label '$ONBOARDING_DISMISS_LABEL' was also not seen — verify the AXLabel is correct (test by running dismiss_onboarding.sh manually after launch)."
 fi
+# Errors-as-state-probes: classify the final tree to guide diagnosis. A populated
+# tree without FIRST_SCREEN_ID is a different bug from an empty tree (modal-gated).
+if [[ -n "${TREE:-}" ]]; then
+  CHILD_COUNT=$(echo "$TREE" | jq -r '[.. | objects | select(.children? | type == "array") | .children[]] | length' 2>/dev/null || echo "?")
+  if [[ "$CHILD_COUNT" == "0" ]]; then
+    ERR_MSG+=$'\n  hint: final AXTree had children:[] — the launch screen is likely gated by an auto-presented modal (review prompt, alert, sheet, fullScreenCover). See SKILL.md "Common first-real-app friction" #6 and "Modal AXTree gating".'
+    ERR_MSG+=$'\n  diagnose: screenshot.sh launch-fail (to see the modal), then: axe describe-ui --point <x>,<y> --udid '
+    ERR_MSG+="$UDID"
+    ERR_MSG+=" — full-tree describe will be empty while the modal is up; --point reaches the dismiss button directly."
+  fi
+fi
 echo "$ERR_MSG" >&2
 exit 5

@@ -181,7 +181,7 @@ if [[ ${#MAIN_TABS_ARR[@]} -gt 0 ]] && [[ "$WILL_WRITE_CONFIG" -eq 1 ]]; then
   elif [[ "$COORDS_TAB_COUNT" -eq 0 ]]; then
     warn "no tab coordinates registered for '$TARGET_SIM' in $COORDS; tap_tab.sh will fail until either per-project MAIN_TABS_COORDS is set (pass --main-tabs-coords \"x1,y1 x2,y2 ...\") or coords are added to $COORDS (cross-project — affects every app on this machine using '$TARGET_SIM')."
   elif [[ "$COORDS_TAB_COUNT" -ne "${#MAIN_TABS_ARR[@]}" ]] && [[ "$NEW_ACK" != "$CURRENT_PAIR" ]]; then
-    warn "MAIN_TABS has ${#MAIN_TABS_ARR[@]} entries but $COORDS lists $COORDS_TAB_COUNT default tab coords for '$TARGET_SIM'; counts must match for tap_tab.sh. Best fix: calibrate per-app (screenshot + measure) and pass --main-tabs-coords \"x1,y1 x2,y2 ...\" — per-project coords don't affect other apps. Alternative: --ack-tab-mismatch silences this warning on future runs with the same MAIN_TABS:coord-count pair."
+    warn "MAIN_TABS has ${#MAIN_TABS_ARR[@]} entries but $COORDS lists $COORDS_TAB_COUNT default tab coords for '$TARGET_SIM'; counts must match for tap_tab.sh. Best fix: run 'calibrate.sh' (auto-measures via Pillow centroid detection on a fresh screenshot and rewrites MAIN_TABS_COORDS in place). Manual alternative: pass --main-tabs-coords \"x1,y1 x2,y2 ...\" if you've measured by hand. Per-project coords don't affect other apps. Suppress the warning: --ack-tab-mismatch silences future runs with the same MAIN_TABS:coord-count pair."
   fi
 fi
 
@@ -290,6 +290,51 @@ fi
 
 echo "setup complete."
 
+# Detect install kind so the emitted CLAUDE.md snippet uses a path that
+# actually resolves on this machine. Marketplace installs land under
+# ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>/scripts —
+# the version directory changes on plugin update, so the cache path is unstable
+# for hand-runnable terminal commands. Manual installs land under
+# ~/.claude/skills/<skill>/scripts and are version-stable. Dev/repo installs
+# (e.g., /Users/foo/code/ios-build-verify) are absolute paths.
+RESOLVED_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVED_SKILL_DIR="$(cd "$RESOLVED_SCRIPTS_DIR/.." && pwd)"
+if [[ "$RESOLVED_SCRIPTS_DIR" == "$HOME"/* ]]; then
+  EMIT_SCRIPTS_DIR="~${RESOLVED_SCRIPTS_DIR#$HOME}"
+  EMIT_SKILL_DIR="~${RESOLVED_SKILL_DIR#$HOME}"
+else
+  EMIT_SCRIPTS_DIR="$RESOLVED_SCRIPTS_DIR"
+  EMIT_SKILL_DIR="$RESOLVED_SKILL_DIR"
+fi
+
+INSTALL_KIND_NOTE=""
+case "$RESOLVED_SCRIPTS_DIR" in
+  *"/.claude/plugins/cache/"*)
+    INSTALL_KIND_NOTE="
+Note: this skill is installed via Claude Code's plugin marketplace. The path
+above includes a version directory (currently ${RESOLVED_SCRIPTS_DIR##*/skills/ios-build-verify}
+under ${RESOLVED_SKILL_DIR%/skills/ios-build-verify}/<version>/) that changes on
+plugin update, so the literal cache path drifts when the plugin upgrades.
+For a stable terminal-runnable path, create a one-time symlink:
+
+  ln -s '$RESOLVED_SKILL_DIR' ~/.claude/skills/ios-build-verify
+
+After the symlink, ~/.claude/skills/ios-build-verify/scripts/build_app.sh works
+across plugin updates. Future Claude Code sessions resolve the skill via plugin
+metadata (no symlink needed for in-session invocation)."
+    ;;
+  *"/.claude/skills/"*)
+    : # Manual install: emitted path is already stable, no note needed.
+    ;;
+  *)
+    INSTALL_KIND_NOTE="
+Note: this skill is being run from a development / non-standard location
+($RESOLVED_SKILL_DIR). The emitted path above is absolute and machine-specific
+— if you commit the snippet to a repo that other developers will clone, switch
+to ~/.claude/skills/ios-build-verify/scripts/... after they install the skill."
+    ;;
+esac
+
 cat <<EOF
 
 ----- Suggested CLAUDE.md update (copy the block between the BEGIN/END markers) -----
@@ -309,18 +354,18 @@ output and tee raw output to \`build.log\` as a fallback.
 
 \`\`\`bash
 # Build the app
-~/.claude/skills/ios-build-verify/scripts/build_app.sh
+$EMIT_SCRIPTS_DIR/build_app.sh
 
 # Run all tests
-~/.claude/skills/ios-build-verify/scripts/run_tests.sh
+$EMIT_SCRIPTS_DIR/run_tests.sh
 
 # Run a single test (Swift Testing form: Target/Suite/method())
-~/.claude/skills/ios-build-verify/scripts/run_tests.sh --only-testing "${APP_NAME}Tests/SuiteName/method()"
+$EMIT_SCRIPTS_DIR/run_tests.sh --only-testing "${APP_NAME}Tests/SuiteName/method()"
 \`\`\`
 
 The per-project config lives at \`.claude/ios-build-verify.config.sh\` and is
-sourced by every script. See \`~/.claude/skills/ios-build-verify/SKILL.md\` for
-the full operation surface (verify ops, named-intent ops, annotation-check).
+sourced by every script. See \`$EMIT_SKILL_DIR/SKILL.md\` for the full operation
+surface (verify ops, named-intent ops, annotation-check).
 
------ END CLAUDE.md snippet -----
+----- END CLAUDE.md snippet -----$INSTALL_KIND_NOTE
 EOF
