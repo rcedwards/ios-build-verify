@@ -46,6 +46,7 @@ Adopters bringing the skill to an existing app — as opposed to a clean lab pro
 4. **TipKit popovers gating mid-flow.** `Tips.configure(...)` on the launch screen will sporadically present popovers that gate the AXTree. See "Modal AXTree gating → TipKit."
 5. **Form-in-NavigationStack walls.** `Toggle`/`Picker` inside `Form` inside `NavigationStack` on iOS 26 silently rejects HID dispatch. See "iOS 26 Form-in-NavigationStack" for the `simctl launch -- -key value` injection workaround.
 6. **Launch-time modal auto-presentation.** Apps that auto-present a `.sheet` / `.alert` / `.popover` / `.fullScreenCover` on first render — review prompts, "what's new" sheets, IAP paywalls, custom permission primers, custom rate-this-app dialogs — gate the AXTree before `FIRST_SCREEN_ID` can be polled, and `launch_app.sh` exits 5 with `children: []` in the final tree. The modal-gating mechanism is the same one documented for verify-ops mid-flow (see "Modal AXTree gating" below); the launch-time variant just hits earlier. Recovery patterns: (a) if the dismiss button has a stable AXLabel across cold launches and the underlying AXTree exposes it, set `ONBOARDING_DISMISS_LABEL` to that label so the wait-for-render interleave taps it; (b) if the modal gates the AXTree completely (full children-not-enumerated case — common with custom popovers and some `.alert` shapes), one-time-tap the dismiss button via `axe describe-ui --point <x>,<y>` to locate it, then rely on the app's cooldown / "seen" flag to suppress on subsequent launches; (c) for a clean test sandbox, `xcrun simctl uninstall <UDID> <BUNDLE_ID>` resets the app's UserDefaults. The May 2026 Konjugieren validation surfaced this with a custom review prompt fired by accumulated `promptActionCount` UserDefaults — `launch_app.sh` exits with the gating hint that classifies the post-state.
+7. **iOS 26 SwiftUI `TabView(.page)` gesture-injection wall.** Apps with onboarding or any other paged TabView (`.tabViewStyle(.page)`) cannot be advanced via `axe swipe`: the gesture executes at the AXe layer but the page coordinator's velocity threshold rejects it. Page-indicator dots (`.indexViewStyle`) are not hit-testable as accessibility elements either, so tapping the second dot does nothing. Recovery: read the source to understand the page sequence and the dismiss/skip mechanism, then either dismiss the modal entirely (if you only need the post-modal state) or drive page advancement programmatically by setting the bound state that `selection: $currentPage` reads. The May 5 2026 Konjugieren UI-audit validation hit this on `OnboardingView.swift` and ended up reading source for design inspection rather than capturing per-page screenshots. `swipe_page_tabview.sh` (below) is a fail-fast diagnostic: it runs a wide-and-slow swipe and exits 7 with this hint when the AXTree didn't change.
 
 The friction is bounded — every item above has a documented workaround — but the *first* time you hit one in a new app is the moment to read the corresponding section, not after the fifth opaque verify failure.
 
@@ -74,6 +75,7 @@ Operations live in a flat `scripts/` directory with self-describing names. Build
 | `WAIT_FOR_RENDER_BUDGET_S` | `10` | Seconds `launch_app.sh` will wait for `FIRST_SCREEN_ID` to appear *after* `simctl bootstatus -b` completes (if cold boot) and `simctl launch` returns. Tunable per machine. |
 | `MAIN_TABS` | `(convert info settings)` | Bash array of the app's main TabView tab names, in render order. `tap_tab.sh` looks up the requested name's index in this array. Empty (`MAIN_TABS=()`) is legitimate for apps without a TabView; `tap_tab.sh` exits cleanly with a "no tabs configured" error in that case. |
 | `MAIN_TABS_COORDS` | `("115,822" "287,822")` | Bash array of `x,y` coordinates parallel to `MAIN_TABS`. When set, `tap_tab.sh` taps these coords and ignores `data/coordinates.json` entirely. Per-project coordinates exist because the modern `Tab(...)` DSL renders pills whose centers depend on tab count *and* device, so the shared default file can't be authoritative for both 2-tab and 3-tab apps on the same simulator. Calibrate via screenshot + measurement (see "iOS 26 Tab-bar coordinate fallback" below). Empty (`()`) means "fall back to `data/coordinates.json` defaults" — safe for the canonical 3-tab case on the shipped device entries. |
+| `MAIN_TAB_ANCHORS` | `("Convert" "Info" "Settings")` | Optional. Bash array of `AXLabel` strings parallel to `MAIN_TABS` — one expected on-screen label per tab, used by `smoke_test.sh` for per-tab assertions via `verify_label_visible.sh`. Holds labels (matched against `axe describe-ui`'s `AXLabel` field), not identifiers — `calibrate.sh --tab-anchors` is the identifier-based counterpart. Empty (`()`) or unset means `smoke_test.sh` falls back to "AXTree changed after tap" verification, which catches no-op taps but doesn't confirm the destination screen rendered as expected. |
 | `MAIN_TABS_COUNT_ACK` | `"2:3"` (quoted `<declared>:<coord-count>` tuple) | Optional. When present and equal to the current `<MAIN_TABS-length>:<data.tabs[TARGET_SIM]-length>` pair, `setup_project.sh` suppresses its MAIN_TABS-vs-coords-count mismatch warning (only consulted in the data-file fallback path; ignored when `MAIN_TABS_COORDS` is set). Set by `--ack-tab-mismatch`; preserved across re-runs; re-fires the warning when either side of the pair changes. Empty string (`""`) is the default. |
 | `ONBOARDING_DISMISS_LABEL` | `Skip` | Optional. AXLabel of the Skip / Dismiss / Get-Started button shown by the app's first-launch onboarding view. When set, `launch_app.sh`'s wait-for-render loop interleaves a check for this label and taps it once if present, then continues polling for `FIRST_SCREEN_ID`. Empty (`''`) means no auto-dismiss; apps without an onboarding view leave this empty. The standalone `dismiss_onboarding.sh` reads the same field for direct invocation. |
 
@@ -247,9 +249,36 @@ Exit code propagates from `xcodebuild`. The parameterized-summary post-process r
 
 ## Verify operations
 
-The verify half wraps `xcrun simctl` (lifecycle: boot, install, launch, terminate) and AXe (drive: tap, type, swipe; observe: describe-ui, screenshot) behind named operations: lifecycle, the cheapest observation primitive (`describe-ui`), the three tap selectors (`--id`, `--label`, `-x -y`), the tab-bar coordinate wrapper, `screenshot`, the four named-intent ops (`read_value`, `verify_value`, `verify_screen_loaded`, `set_value`), and the annotation-check phase (`find_id_in_source`, `audit_view`). The lab project's `docs/EDD_PRD.md` carries the full design.
+The verify half wraps `xcrun simctl` (lifecycle: boot, install, launch, terminate) and AXe (drive: tap, type, swipe; observe: describe-ui, screenshot) behind named operations: lifecycle, the cheapest observation primitive (`describe-ui`), the three tap selectors (`--id`, `--label`, `-x -y`), the tab-bar coordinate wrapper, `screenshot`, the named-intent ops (`read_value`, `verify_value`, `verify_segment`, `verify_screen_loaded`, `verify_label_visible`, `set_value`, `type_text`), and the annotation-check phase (`find_id_in_source`, `audit_view`). The lab project's `docs/EDD_PRD.md` carries the full design.
 
 **Screenshot before AND after UI changes.** For any code change that affects rendered layout, color, typography, or spacing, capture screenshots via `screenshot.sh` both before the edit and after — even if `describe-ui`-based assertions pass. The May 1 Calculator validation found three distinct bug classes (bordered-button frame collapse, iOS 26 floating-tab-pill location, hue confirmation) where the AXTree reported green but the rendered UI was wrong. Screenshots are not a fallback to AXTree — they are a different verification surface that catches a different class of bugs. The before-shot makes the diff an explicit artifact (not just a memory of "what it looked like a moment ago"), and is cheap insurance against the case where the layout changed in a way you didn't expect: a regressed neighboring view, an unintended layout shift, a screen that looks identical to memory but differs in detail.
+
+### Coordinate space: logical points, not pixels
+
+`axe tap`, `axe swipe`, and `axe describe-ui` consume **logical points**, not pixels. `xcrun simctl io <UDID> screenshot <path>` writes a PNG in **pixels** at the device's native scale (3× on iPhone 17 / 17 Pro / 17 Plus). Mixing them produces taps that land far off-screen and look like silent failures — the May 5 2026 Konjugieren UI-audit validation hit this when an agent screenshotted a "Dismiss" button at pixel `(1024, 184)`, called `axe tap -x 1024 -y 184`, and tapped well off the visible viewport (which on iPhone 17 is roughly 393 × 852 points).
+
+When a candidate coordinate is already in hand (e.g., measured off a screenshot), divide the pixel coordinate by the device's scale factor to recover logical points, then pass the result to `describe_ui.sh --point <x>,<y>` to confirm what element sits there. The returned `AXFrame` is already in logical points; tap `(frame.x + frame.w/2, frame.y + frame.h/2)`.
+
+When only an `AXLabel` is in hand, walk the full describe-ui tree for a node whose label matches and read its `frame`:
+
+```bash
+axe describe-ui --udid "$UDID" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+def walk(node):
+    if isinstance(node, dict):
+        if node.get('AXLabel') == 'Dismiss' and node.get('type') == 'Button':
+            print(node.get('frame'))
+        for v in node.values(): walk(v)
+    elif isinstance(node, list):
+        for v in node: walk(v)
+walk(data)
+"
+```
+
+### Key dispatch
+
+`axe key <keycode>` takes a **positional** keycode argument, not a `--keycode` flag (`axe key --keycode 40` errors with "Unknown option `--keycode`"). The codes are HID usage codes: `40` = return, `42` = backspace, `41` = escape, `43` = tab. For modifier-key combinations, use `axe key-combo --modifiers <mask> --key <code>` instead — `set_value.sh` calls `axe key-combo --modifiers 227 --key 4` to send Cmd+A as its select-all-then-replace primitive.
 
 ### `scripts/launch_app.sh`
 
@@ -356,6 +385,19 @@ Optional `--verify-anchor <accessibility-identifier>` adds a post-tap render che
 
 Uses `jq` to read `data/coordinates.json` only when `MAIN_TABS_COORDS` is unset (Apple ships `/usr/bin/jq` on macOS). Exit codes: `0` on dispatch (or anchor rendered, when `--verify-anchor` is set); `2` config missing, no argument, `MAIN_TABS` empty/undeclared (no-TabView app), or fallback coords data file missing; `3` no booted simulator; `4` `MAIN_TABS`-vs-`MAIN_TABS_COORDS` count mismatch, `MAIN_TABS`-vs-data-file count mismatch, tab name not in `MAIN_TABS`, malformed coord entry, or no coords for the resolved index on `TARGET_SIM`; `5` `--verify-anchor` did not appear within `WAIT_FOR_RENDER_BUDGET_S`.
 
+### `scripts/swipe_page_tabview.sh`
+
+Fail-fast diagnostic for the iOS 26 SwiftUI `TabView(.page)` gesture-injection wall (see "Common first-real-app friction" item 7). Runs a wide right-to-left horizontal swipe with extended duration, then `shasum`-fingerprints `axe describe-ui` before and after to detect whether the page actually advanced. On no change, exits 7 with a hint pointing at the friction-list workaround.
+
+```bash
+~/.claude/skills/ios-build-verify/scripts/swipe_page_tabview.sh
+~/.claude/skills/ios-build-verify/scripts/swipe_page_tabview.sh --start-x 43 --end-x 350   # back swipe
+```
+
+Defaults are calibrated for iPhone 17's 393pt-wide viewport: `(350,425) → (43,425)` over 0.8s. Override via `--start-x` / `--start-y` / `--end-x` / `--end-y` / `--duration` for back swipes, vertical paged TabViews, or alternate viewports. The defaults are intentionally slow and wide — they're chosen to clear most page-coordinator velocity thresholds *when those thresholds are reachable at all*. The script's value is in the failure path (classifying the no-op silent rejection), not the swipe parameters; if defaults don't advance the page, alternate parameters won't either.
+
+Exit codes: `0` AXTree changed after swipe (page likely advanced — verify with `verify_label_visible.sh` against an expected per-page label if the destination is known); `2` config missing or malformed argument; `3` no booted simulator; `7` AXTree unchanged (the gesture-injection wall — see SKILL.md "Common first-real-app friction" item 7).
+
 ### `scripts/screenshot.sh`
 
 `axe screenshot` writing to `<project>/docs/screenshots/<timestamp>-<context>.png`. Echoes the absolute path of the written file on stdout for the agent to capture as a file reference (per the EDD's token-conservation strategy: screenshots as file references, not embedded payloads). Creates `docs/screenshots/` on demand (`mkdir -p`).
@@ -365,7 +407,9 @@ SHOT=$(~/.claude/skills/ios-build-verify/scripts/screenshot.sh settings-tab-afte
 # $SHOT now holds the absolute path. Read the PNG only when visual verification is actually required.
 ```
 
-Timestamp is local-time (`%Y%m%d-%H%M%S`). Context slugs follow `lowercase-kebab-case` so they nest cleanly in `ls`-sorted output (lenient — not enforced by the script). Exit codes: `0` on success; `2` config missing or no argument; `3` no booted simulator.
+The argument is a context slug, not a path; the script generates the output path internally. Path-shaped arguments (containing `/` or ending in `.png`) are refused with exit 2 and a hint pointing at `xcrun simctl io <UDID> screenshot <abs-path>` for the rare case where a custom output path is actually wanted. The May 5 2026 Konjugieren UI-audit validation hit the unguarded form: `screenshot.sh docs/screenshots/onboarding-2.png` was accepted as a slug and produced a nested `docs/screenshots/<timestamp>-docs/screenshots/onboarding-2.png.png`, after which the agent abandoned the wrapper for the rest of the session and bypassed skill-internal logging.
+
+Timestamp is local-time (`%Y%m%d-%H%M%S`). Context slugs follow `lowercase-kebab-case` so they nest cleanly in `ls`-sorted output (lenient — not enforced by the script). Exit codes: `0` on success; `2` config missing, no argument, or path-shaped argument; `3` no booted simulator.
 
 ### `scripts/read_value.sh`
 
@@ -428,6 +472,21 @@ Poll `describe-ui` until an anchor `<accessibility-identifier>` appears, with th
 
 Quick-path: the first `describe-ui` call runs before any `sleep`, so when the anchor is already on screen the op returns in one iteration (no built-in floor latency). Slow-path: poll-until-budget for genuine wait scenarios. Uses jq's recursive-descent count (same shape as `read_value.sh`) rather than a substring grep — robust against JSON-encoding edge cases. Exit codes: `0` rendered; `2` config missing or no argument; `3` no booted simulator; `5` anchor never appeared within `WAIT_FOR_RENDER_BUDGET_S`.
 
+### `scripts/verify_label_visible.sh`
+
+Single-shot assertion that an element with a given `AXLabel` is present in the current AXTree. The most generic presence probe — covers the "did Settings render?" / "did the modal dismiss?" / "did the toast appear?" cases that don't fit the more specialized verify ops (which key off `AXUniqueId`, value, or selection).
+
+```bash
+~/.claude/skills/ios-build-verify/scripts/verify_label_visible.sh "Settings"
+~/.claude/skills/ios-build-verify/scripts/verify_label_visible.sh "Done" --role Button
+```
+
+`--role <role>` (matched against the `type` field `axe describe-ui` returns) disambiguates when the same label appears across roles — a `Button` and a `StaticText` both labeled "Done," say.
+
+Use cases: after `tap_xy.sh` to confirm the screen actually changed (especially when the tap dispatch reported success but no `verify_*` op currently asserts the post-state); after `launch_app.sh` to confirm a screen-specific label rendered when `FIRST_SCREEN_ID` is too generic to distinguish post-launch from a deep-nav state; inside audit-driving loops that need a single-step "is this here?" probe without composing `axe describe-ui | grep` ad hoc. No polling — for wait-for-render semantics, key off `AXUniqueId` and use `verify_screen_loaded.sh`.
+
+Exit codes: `0` label present; `2` config missing, no argument, or malformed `--role`; `3` no booted simulator; `4` label not present in AXTree.
+
 ### `scripts/set_value.sh`
 
 Focus a TextField and replace its contents with `<text>`. Resolves the "AXe `type` appends, doesn't replace" surface — the named-intent layer's job is to make "set this field to X" do what its name says.
@@ -443,6 +502,51 @@ Composition: validates the identifier via `read_value.sh` (existence + uniquenes
 The Cmd+A approach is constant-time regardless of existing field length (no per-character backspace loop) and works on `.numberPad` TextFields as well as standard ones — verified empirically against AztecCal's `input_convert_month` (`"49"` → `"7"` in two HID dispatches).
 
 Exit codes: `0` write confirmed (AXValue read back equals `$TEXT`); `2` config missing or fewer than two arguments; `3`/`4`/`5` propagated from `read_value.sh`; `6` write read-back mismatch (HID dispatch returned but the value didn't land — diagnose: Toggle or Picker in Form in NavStack on iOS 26, TextField/TextEditor input filter mutating typed string (smart dashes, smart quotes, autocapitalization), or element with no exposed AXValue); `7` propagated from `tap_id.sh` when the target overlaps the floating tab pill. The exit-6 stderr hint enumerates the four causes in detail with a SwiftUI-native vs. UIViewRepresentable branch for the no-AXValue case.
+
+### `scripts/type_text.sh`
+
+Type text into a `TextField` / `TextEditor` regardless of whether the field has an `.accessibilityIdentifier()`. Two modes:
+
+```bash
+~/.claude/skills/ios-build-verify/scripts/type_text.sh --id input_convert_month "7"
+~/.claude/skills/ios-build-verify/scripts/type_text.sh --xy 196,512 "wrong-answer"
+~/.claude/skills/ios-build-verify/scripts/type_text.sh --xy 196,512 --verify-target "Answer" --verify-role TextField "wrong-answer"
+```
+
+`--id` is a thin alias for `set_value.sh` — focuses by identifier, clears via Cmd+A, types, and read-back-verifies. Use when the field has an identifier; this path inherits all of `set_value.sh`'s exit codes (including exit 6 read-back mismatch with the four-cause hint).
+
+`--xy` is for fields with no identifier — common on screens whose `TextField` carries `.focused`/`.accessibilityFocused`/`.accessibilityHint` modifiers but no `.accessibilityIdentifier()`. The May 5 2026 Konjugieren UI-audit validation hit this exact shape on `QuizView.swift`'s answer field and surfaced two gaps: (1) `xcrun simctl io <UDID> type "..."` is **not a real subcommand** (silent no-op); the underlying primitive is `axe type "$TEXT" --udid "$UDID"`, which `type_text.sh` mechanizes; (2) without an identifier there is no read-back path, so the script taps to focus, clears, types, and exits 0 with a "no read-back verification" message — the caller is expected to assert post-state via `verify_label_visible.sh`, a screenshot, or another follow-up observation.
+
+Optional `--verify-target <axlabel>` (and `--verify-role <role>`) are threaded through `tap_xy.sh` — the focus tap inherits the same AXLabel/role guard, so coordinate-driven typing won't fire if the coordinate doesn't actually land on the expected element. `--verify-role TextField` is the typical guard for unidentified text fields.
+
+The `axe type "$TEXT"` primitive is also usable directly (e.g., to type without a prior focus tap, when the field is already focused and the keyboard is up). Surfaced here once so the agent doesn't have to read `set_value.sh`'s source to discover it.
+
+Exit codes: in `--id` mode, all of `set_value.sh`'s codes are propagated. In `--xy` mode: `0` typed (no read-back); `2` config missing, malformed args, or `--verify-target`/`--verify-role` passed in `--id` mode; `3` no booted simulator; `8` `--verify-target`/`--verify-role` mismatch (no tap dispatched, no typing).
+
+### `scripts/smoke_test.sh`
+
+End-to-end first-real-app smoke test: `build_app.sh` → `launch_app.sh` → `screenshot.sh smoke-launch` → for each `MAIN_TABS` entry, `tap_tab.sh` + `screenshot.sh smoke-tab-<name>` + per-tab assertion → `terminate_app.sh`. Each step emits `✓ <name>` on success or `✗ <name> (<reason>)` with a SKILL.md hint on failure. The script continues past per-tab failures so the operator gets a complete pass/fail rollup; build and launch failures are blocking and abort the run.
+
+```bash
+~/.claude/skills/ios-build-verify/scripts/smoke_test.sh
+# ✓ build
+# ✓ launch (FIRST_SCREEN_ID 'verb_browse_anchor' seen in 4s)
+# ✓ screenshot smoke-launch
+# ✓ tab verbs (anchor 'Verbs' visible)
+# ✓ tab families (anchor 'Families' visible)
+# ✗ tab quiz (anchor 'Quiz' not present — check the label exact-match, or see SKILL.md 'Identifier rollup' if a parent container's identifier is masking the leaf)
+# ✓ terminate
+# ---
+# smoke_test.sh: 6 pass, 1 fail, 18s
+```
+
+Per-tab assertion mode depends on whether `MAIN_TAB_ANCHORS` is configured. When set (and parallel to `MAIN_TABS`), the script asserts each anchor via `verify_label_visible.sh` — the canonical "did the right screen render?" probe. When unset, the script falls back to "AXTree changed after `tap_tab.sh`" verification: it captures a `shasum` fingerprint of `axe describe-ui` before and after the tap and reports `✓` if the trees differ. The fallback catches no-op taps (mis-calibrated coords, hit-tested off-pill) but doesn't confirm the destination screen is the *expected* one — `MAIN_TAB_ANCHORS` is the upgrade path.
+
+The first run on a new project does the friction discovery a human would otherwise do across multiple sessions. Build failures point at the build environment; launch failures map to the "Common first-real-app friction" items (greenfield identifiers, onboarding gating, modal auto-presentation); per-tab failures classify into tab-pill calibration (exit 4 from `tap_tab.sh`) versus identifier rollup or label-mismatch (exit 4 from `verify_label_visible.sh`).
+
+**Distinct from `calibrate.sh`.** `calibrate.sh` is one-time setup: it *writes* `MAIN_TABS_COORDS` to the config based on `measure_tab_pill.sh` output and verifies via `tap_tab.sh --verify-anchor` (AXUniqueId). `smoke_test.sh` is ongoing: it doesn't modify the config, asserts via `verify_label_visible.sh` (AXLabel), and includes screenshots and a terminate step. Run `calibrate.sh` once after `setup_project.sh`; run `smoke_test.sh` whenever you want to confirm the app still drives end-to-end.
+
+Exit codes: `0` all steps passed; `1` one or more steps failed (per-step output classifies which); `2` config missing; non-zero from build or launch (script aborts and propagates the underlying script's exit semantics via the per-step output).
 
 ### Annotation-check phase (migration-by-use)
 
