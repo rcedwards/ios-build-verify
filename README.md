@@ -160,6 +160,10 @@ The colloquy collects the app's display name, the bundle identifier, the Xcode p
 
 Behavior on untested configurations (Sonnet, Haiku, non-Anthropic models, IDE-embedded agents, MCP-driven setups, Cursor / Cline / Aider / and so on) may vary from "works fine" to "subtly wrong in ways that look like skill bugs but are actually agent-judgment shortfalls". This is scope of validation, not scope of permission.
 
+# Deep Dive
+
+An extremely deep dive on this skill's development and philosphy is available [here](https://racecondition.software/blog/ios-build-verify/).
+
 # Acknowledgments
 
 - **Antoine van der Lee** inspired, via [SwiftUI Agent Skill](https://github.com/AvdLee/SwiftUI-Agent-Skill), this skill's installation instructions.
