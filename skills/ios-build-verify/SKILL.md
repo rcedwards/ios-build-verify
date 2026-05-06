@@ -109,6 +109,34 @@ Every script's first line is `#!/usr/bin/env bash`, which tells the OS to interp
 
 The scripts are written to bash 3.2 compatibility (no `mapfile`, no `${var,,}` lowercasing, no associative arrays, no `wait -n`, no other bash-4+ features), so they work on either the system `/bin/bash` (3.2.57, frozen since 2014 over GPL3 concerns) or a Homebrew bash 5+. `#!/usr/bin/env bash` resolves to whichever bash is first on PATH at script-run time. If Apple ever removes `/bin/bash` outright, `brew install bash` is the one-time mitigation; the scripts themselves don't change.
 
+## Resolving the script path
+
+Throughout this document, **`<scripts>/`** is shorthand for the resolved on-disk path to the skill's `scripts/` directory. The path varies by install shape:
+
+**Plugin-marketplace install (canonical for v0.2.1+).** Installed via `claude plugin install ios-build-verify@<marketplace>`. Creates two on-disk locations, both containing equivalent copies of `scripts/`:
+
+- **Cache** (versioned; the path recorded as `installPath` in `~/.claude/plugins/installed_plugins.json`): `~/.claude/plugins/cache/<marketplace>/ios-build-verify/<version>/skills/ios-build-verify/scripts/`. The `<version>` segment matches `version` in this skill's `.claude-plugin/plugin.json` and rotates on every release bump, so a hardcoded literal will rot. Refreshed by `claude plugin update`.
+- **Marketplace clone** (unversioned, git working copy): `~/.claude/plugins/marketplaces/<marketplace>/skills/ios-build-verify/scripts/`. Stable path across version bumps; refreshed by `claude plugin marketplace update`.
+
+Either path's `build_app.sh` works for invocation. The discovery one-liner below finds whichever the filesystem returns first; for routine use that's fine, since the two copies stay in sync after a normal `marketplace update` + `plugin update` flow.
+
+**Manual install.** Skill checked out and placed under `~/.claude/skills/ios-build-verify/`. Resolves to `~/.claude/skills/ios-build-verify/scripts/` — stable across versions, but only applies when the consumer manages installation by hand rather than through the marketplace.
+
+**Discovery (one-liner, install-shape-agnostic).** When in doubt about which path applies on the current machine:
+
+```bash
+find ~/.claude -path '*ios-build-verify*' -name build_app.sh 2>/dev/null | head -1
+```
+
+For repeated invocation in a session, export `IBV_SCRIPTS` once:
+
+```bash
+export IBV_SCRIPTS=$(dirname "$(find ~/.claude -path '*ios-build-verify*' -name build_app.sh 2>/dev/null | head -1)")
+"$IBV_SCRIPTS/build_app.sh"
+```
+
+**For agents reading this document:** when you see `<scripts>/build_app.sh` in an example below, substitute the resolved path. The `find` one-liner above is the safe step when uncertain. A consumer project's `CLAUDE.md` should disclose its install shape so subsequent sessions don't need to rediscover.
+
 ## First-use setup
 
 Each project needs its own per-project config (`<project>/.claude/ios-build-verify.config.sh`). The skill ships a colloquy that collects the answers and writes the file via `scripts/setup_project.sh`.
@@ -170,7 +198,7 @@ If the project isn't a git repository (no `.git` directory), skip these question
 Compose a single call with the user's answers:
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/setup_project.sh \
+<scripts>/setup_project.sh \
   --app-name "AztecCal" --bundle-id "biz.joshadams.AztecCal" \
   --project "AztecCal.xcodeproj" --scheme "AztecCal" \
   --target-sim "iPhone 17" --first-screen-id "input_convert_month" \
@@ -198,9 +226,9 @@ Exit codes for `setup_project.sh`: `0` setup complete; `2` invalid or missing re
 After `setup_project.sh` writes the config, the agent should immediately run `calibrate.sh` to give the adopter end-to-end proof the skill works in their app — not just proof the config file was written. Calibration composes build + launch + measure + (optional) per-tab tap-and-verify into one command.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/calibrate.sh                                                    # build, launch, measure tab pill, write coords
-~/.claude/skills/ios-build-verify/scripts/calibrate.sh --tab-anchors "input_a text_b card_c"              # plus tap-and-verify each tab against its anchor
-~/.claude/skills/ios-build-verify/scripts/calibrate.sh --skip-build                                       # already built; just re-measure / re-verify
+<scripts>/calibrate.sh                                                    # build, launch, measure tab pill, write coords
+<scripts>/calibrate.sh --tab-anchors "input_a text_b card_c"              # plus tap-and-verify each tab against its anchor
+<scripts>/calibrate.sh --skip-build                                       # already built; just re-measure / re-verify
 ```
 
 Steps the script runs in order: `build_app.sh` (filtered through the recommended grep), `launch_app.sh` (which auto-dismisses onboarding when configured), `measure_tab_pill.sh` (centroid-detection on a fresh screenshot), in-place rewrite of the `MAIN_TABS_COORDS=` line in `<project>/.claude/ios-build-verify.config.sh`, and (when `--tab-anchors` is passed) `tap_tab.sh <name> --verify-anchor <id>` for each tab.
@@ -222,7 +250,7 @@ Exit codes: `0` calibration successful; `2` config missing, bad arg, or no TabVi
 Builds the configured Xcode project for the configured simulator. Pipes `xcodebuild` output through `xcbeautify` for concise summary output; mirrors raw output to `build.log` (in cwd) as a lossy-filter fallback. Invoke from the project root:
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/build_app.sh
+<scripts>/build_app.sh
 ```
 
 Exit code is propagated from `xcodebuild` via `set -o pipefail`. On failure, `xcbeautify`'s output surfaces `file:line:col: error:` anchors; if those are insufficient, fall back to `grep -B2 -A20 'error:' build.log` for the raw diagnostic. Deepest fallback (rare): `xcrun xcresulttool get --path ./Build/.../Test-*.xcresult --format json`.
@@ -238,9 +266,9 @@ Runs `xcodebuild test` with xcbeautify formatting, parallel testing disabled (`-
 Optional `--only-testing <Target/Suite/method()>` filters to a single suite or method (chainable: pass multiple `--only-testing` flags to run multiple targeted tests). Each value is forwarded as a separate `-only-testing:` arg to `xcodebuild`. Use the Swift Testing form `Target/Suite/method()` — note the trailing `()` on method names; omitting it causes xcodebuild to silently run zero tests.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/run_tests.sh
-~/.claude/skills/ios-build-verify/scripts/run_tests.sh --only-testing AztecCalTests/ConverterTests           # whole suite
-~/.claude/skills/ios-build-verify/scripts/run_tests.sh --only-testing AztecCalTests/ConverterTests/convert\(\)  # single method
+<scripts>/run_tests.sh
+<scripts>/run_tests.sh --only-testing AztecCalTests/ConverterTests           # whole suite
+<scripts>/run_tests.sh --only-testing AztecCalTests/ConverterTests/convert\(\)  # single method
 ```
 
 Suite-level form omits the trailing `/method()`; method-level form requires the trailing `()`. Both work; use whichever scopes match what you're iterating on.
@@ -285,8 +313,8 @@ walk(data)
 Takes a fresh build to a launched, observable app. Resolves the target simulator by name (config: `TARGET_SIM`), preferring the latest-runtime match; boots if needed and waits for full boot via `simctl bootstatus -b`; resolves the `.app` path via `xcodebuild -showBuildSettings`; **terminates any running instance of `BUNDLE_ID` before installing** (rules out stale-process serving pre-edit UI after a rebuild — the May 1 Calculator validation observed this exact incident); installs and launches by bundle identifier; polls `axe describe-ui` until `FIRST_SCREEN_ID` appears (budget `WAIT_FOR_RENDER_BUDGET_S`). Invoke from project root after `build_app.sh`:
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/launch_app.sh
-~/.claude/skills/ios-build-verify/scripts/launch_app.sh --reuse-install   # skip terminate (warm cache)
+<scripts>/launch_app.sh
+<scripts>/launch_app.sh --reuse-install   # skip terminate (warm cache)
 ```
 
 `--reuse-install` skips the pre-launch terminate. The default behavior pays a ~1s cost per launch in exchange for a freshness guarantee; use the flag only when warm-cache reuse is intentional.
@@ -300,8 +328,8 @@ Exit codes: `0` on launch + render confirmed; `2` config missing; `3` `TARGET_SI
 Tap the first-launch onboarding dismiss button (Skip / Continue / Get Started) by AXLabel. With no argument, uses `ONBOARDING_DISMISS_LABEL` from the per-project config. Idempotent: when the labeled element isn't in the current AXTree (already-dismissed onboarding, no onboarding view), exits 0 without tapping.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/dismiss_onboarding.sh           # uses config's ONBOARDING_DISMISS_LABEL
-~/.claude/skills/ios-build-verify/scripts/dismiss_onboarding.sh "Skip"    # one-off override (e.g., for a "what's new" sheet)
+<scripts>/dismiss_onboarding.sh           # uses config's ONBOARDING_DISMISS_LABEL
+<scripts>/dismiss_onboarding.sh "Skip"    # one-off override (e.g., for a "what's new" sheet)
 ```
 
 The script is also called automatically inside `launch_app.sh`'s wait-for-render loop when `ONBOARDING_DISMISS_LABEL` is set; direct invocation is for non-launch-time onboarding (a version-bump "what's new" sheet, a feature-discovery overlay shown mid-session).
@@ -313,8 +341,8 @@ Exit codes: `0` dismissed or no-op (idempotent); `2` config missing or no label 
 Thin wrapper over `axe describe-ui` for whichever simulator is currently booted. Emits the structured accessibility-tree dump on stdout; the agent pipes to `grep`/`jq` or `Read`s in full as needed.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/describe_ui.sh | grep -A3 input_convert_month
-~/.claude/skills/ios-build-verify/scripts/describe_ui.sh --point 200,540    # per-point inspection
+<scripts>/describe_ui.sh | grep -A3 input_convert_month
+<scripts>/describe_ui.sh --point 200,540    # per-point inspection
 ```
 
 No-arg invocation returns the full tree (no subtree filtering). `--point x,y` describes the single element at the given logical-points coordinate (see "Per-point inspection" below). Exit codes: `0` on success; `2` config missing or malformed `--point` argument; `3` no booted simulator.
@@ -330,7 +358,7 @@ No-arg invocation returns the full tree (no subtree filtering). `--point x,y` de
 Tap the element matching `AXUniqueId`. Default selector path; cheapest, most stable, works for everything except the iOS 26 Tab bar.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/tap_id.sh input_convert_month
+<scripts>/tap_id.sh input_convert_month
 ```
 
 Pre-flight: looks up the target's `AXFrame` and checks whether its y-center falls within the device's `floating_tab_pill_y_band` (per `data/coordinates.json`). On overlap, exits 7 with a "likely obscured by floating tab pill" warning and a pointer to the "Designing for verify ops" section's adaptive-list-height pattern. Catches the silent-miss-tap-on-the-pill class at the boundary instead of letting it propagate.
@@ -342,8 +370,8 @@ Exit codes: `0` on dispatch (note: dispatch ≠ behavioral effect; see below); `
 Tap the element matching `AXLabel`. Secondary selector when the identifier is unknown or unstable; useful during exploratory verification before the agent learns a codebase's identifier convention. Labels can collide more easily than identifiers (multiple "Settings" buttons across screens), so identifier-tap is the recommended default.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/tap_label.sh "Month input"
-~/.claude/skills/ios-build-verify/scripts/tap_label.sh "÷"   # pass the rendered glyph, not the ASCII alternative
+<scripts>/tap_label.sh "Month input"
+<scripts>/tap_label.sh "÷"   # pass the rendered glyph, not the ASCII alternative
 ```
 
 Pass the exact rendered glyph as the label argument — typographic operators (`÷ × −`, U+00F7 / U+00D7 / U+2212) are different characters from ASCII (`/ * -`) at the AXLabel layer. SwiftUI Buttons get an implicit AXLabel from their `Text` content, so whatever you put in `Text("÷")` is what `tap_label.sh` must match.
@@ -357,8 +385,8 @@ Exit codes mirror `tap_id.sh`.
 Tap raw coordinates (points, origin top-left). Fallback for the iOS 26 Tab bar and any other element the accessibility tree doesn't expose. Validates that both arguments are numeric (decimals allowed; AXe accepts subpixel coords).
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/tap_xy.sh 287 822
-~/.claude/skills/ios-build-verify/scripts/tap_xy.sh 200 540 --verify-target "Not Now"
+<scripts>/tap_xy.sh 287 822
+<scripts>/tap_xy.sh 200 540 --verify-target "Not Now"
 ```
 
 Optional `--verify-target <expected-axlabel>` pre-queries the element under (x,y) via `describe_ui.sh --point` and refuses to tap unless the actual `AXLabel` matches. Catches the "off-by-pixel" failure mode where the gesture dispatches successfully but lands on the wrong element — the May 2026 Konjugieren audit-validation session hit this when an agent-estimated coordinate (200, 425) struck the "Enjoying Konjugieren?" heading `StaticText` instead of the "Not Now" `Button` two rows below; `tap_xy.sh` reported a successful gesture and the bug surfaced only at the next failed verify. Optional second flag `--verify-role <role>` disambiguates when the same AXLabel appears across roles (a `Button` and a `StaticText` both labeled "Done"); pass the role string exactly as `describe_ui.sh --point x,y` reports it. End-to-end gating-recovery composition: `screenshot.sh launch-fail` (capture the modal), `describe_ui.sh --point 200,540` (confirm the dismiss button is at this point), `tap_xy.sh 200 540 --verify-target "Not Now"` (guarded dispatch).
@@ -373,8 +401,8 @@ Tap a tab in the main TabView by name. Wraps the iOS 26 Tab-bar coordinate worka
 2. **`data/coordinates.json`** under the skill (default fallback). Per-device default centers, useful for canonical 3-tab geometry on the shipped device entries.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/tap_tab.sh settings
-~/.claude/skills/ios-build-verify/scripts/tap_tab.sh settings --verify-anchor card_settings_caso
+<scripts>/tap_tab.sh settings
+<scripts>/tap_tab.sh settings --verify-anchor card_settings_caso
 ```
 
 Why two layers: tab *names* are app-specific (`convert/info/settings` for AztecCal; `home/profile/settings` for another app), tab *positions* depend on **both** device geometry and tab count (a 2-tab pill is much narrower than a 3-tab pill on the same iPhone 17). Names live in the per-project config. Positions belong with names when the app's pill differs from the canonical 3-tab default, and only then; otherwise the shared default file works.
@@ -390,8 +418,8 @@ Uses `jq` to read `data/coordinates.json` only when `MAIN_TABS_COORDS` is unset 
 Fail-fast diagnostic for the iOS 26 SwiftUI `TabView(.page)` gesture-injection wall (see "Common first-real-app friction" item 7). Runs a wide right-to-left horizontal swipe with extended duration, then `shasum`-fingerprints `axe describe-ui` before and after to detect whether the page actually advanced. On no change, exits 7 with a hint pointing at the friction-list workaround.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/swipe_page_tabview.sh
-~/.claude/skills/ios-build-verify/scripts/swipe_page_tabview.sh --start-x 43 --end-x 350   # back swipe
+<scripts>/swipe_page_tabview.sh
+<scripts>/swipe_page_tabview.sh --start-x 43 --end-x 350   # back swipe
 ```
 
 Defaults are calibrated for iPhone 17's 393pt-wide viewport: `(350,425) → (43,425)` over 0.8s. Override via `--start-x` / `--start-y` / `--end-x` / `--end-y` / `--duration` for back swipes, vertical paged TabViews, or alternate viewports. The defaults are intentionally slow and wide — they're chosen to clear most page-coordinator velocity thresholds *when those thresholds are reachable at all*. The script's value is in the failure path (classifying the no-op silent rejection), not the swipe parameters; if defaults don't advance the page, alternate parameters won't either.
@@ -403,7 +431,7 @@ Exit codes: `0` AXTree changed after swipe (page likely advanced — verify with
 `axe screenshot` writing to `<project>/docs/screenshots/<timestamp>-<context>.png`. Echoes the absolute path of the written file on stdout for the agent to capture as a file reference (per the EDD's token-conservation strategy: screenshots as file references, not embedded payloads). Creates `docs/screenshots/` on demand (`mkdir -p`).
 
 ```bash
-SHOT=$(~/.claude/skills/ios-build-verify/scripts/screenshot.sh settings-tab-after-correlation-change)
+SHOT=$(<scripts>/screenshot.sh settings-tab-after-correlation-change)
 # $SHOT now holds the absolute path. Read the PNG only when visual verification is actually required.
 ```
 
@@ -416,7 +444,7 @@ Timestamp is local-time (`%Y%m%d-%H%M%S`). Context slugs follow `lowercase-kebab
 Read the `AXValue` of the element matching `<accessibility-identifier>` from the current `describe-ui`. Encapsulates the JSON-traversal logic (`AXValue` lives 15–20 lines deep in `describe-ui`'s per-element output) so the agent never grep-and-counts through nested JSON.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/read_value.sh input_convert_month
+<scripts>/read_value.sh input_convert_month
 # → "4"
 ```
 
@@ -431,8 +459,8 @@ On exit 0 with empty stdout, the script also emits a hint when the element exist
 Assert the `AXValue` of the element matching `<accessibility-identifier>` equals `<expected-value>`. Composes `read_value.sh` (single source of truth for the AXUniqueId lookup); strict string equality. On match, echoes the actual value on stdout — useful as a "read-with-assertion" op when the agent wants both observation and verification in one call.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/verify_value.sh input_convert_month "7"
-~/.claude/skills/ios-build-verify/scripts/verify_value.sh --audit input_convert_month "7"
+<scripts>/verify_value.sh input_convert_month "7"
+<scripts>/verify_value.sh --audit input_convert_month "7"
 # → "7" on match (exit 0); "error: expected '7', got '4'." on mismatch (exit 6)
 ```
 
@@ -449,7 +477,7 @@ Assert that a specific segment of a composite control (segmented `Picker`, `.pal
 **Not supported for `.menu` Picker.** The script's segmentation model assumes horizontal segments each carrying `AXValue: 1` (selected) or `0` (unselected); `.menu` renders as a single `AXPopUpButton` whose `AXValue` is the selected option's display string. For `.menu` Pickers, use `read_value.sh` against the Picker's identifier — when `.accessibilityValue(...)` is set on the SwiftUI Picker, the modifier propagates and `read_value.sh` returns the selected option's string directly. (May 2026 GenericApp + GenericApp2 validation: `verify_segment.sh` against `.menu` Pickers exits 6 with the full label including the title prefix, or 7 with the AXValue-as-string mismatching the expected `1`.)
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/verify_segment.sh picker_translate_direction 1 "Morse → English"
+<scripts>/verify_segment.sh picker_translate_direction 1 "Morse → English"
 # → "segment 1 selected: 'Morse → English'"   on match (exit 0)
 # → "error: segment 1 expected 'Morse → English', got 'English → Morse'."   on label mismatch (exit 6)
 # → "error: segment 1 not selected (AXValue=0)."   on selection mismatch (exit 7)
@@ -466,8 +494,8 @@ Exit codes: `0` segment matches expected label and is selected; `2` config missi
 Poll `describe-ui` until an anchor `<accessibility-identifier>` appears, with the same `WAIT_FOR_RENDER_BUDGET_S` budget `launch_app.sh` uses. The mid-flow standalone counterpart of `launch_app.sh`'s wait-for-render — for verifying tab transitions, modal presentations, sheet pushes, etc.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/tap_tab.sh settings
-~/.claude/skills/ios-build-verify/scripts/verify_screen_loaded.sh card_settings_caso
+<scripts>/tap_tab.sh settings
+<scripts>/verify_screen_loaded.sh card_settings_caso
 ```
 
 Quick-path: the first `describe-ui` call runs before any `sleep`, so when the anchor is already on screen the op returns in one iteration (no built-in floor latency). Slow-path: poll-until-budget for genuine wait scenarios. Uses jq's recursive-descent count (same shape as `read_value.sh`) rather than a substring grep — robust against JSON-encoding edge cases. Exit codes: `0` rendered; `2` config missing or no argument; `3` no booted simulator; `5` anchor never appeared within `WAIT_FOR_RENDER_BUDGET_S`.
@@ -477,8 +505,8 @@ Quick-path: the first `describe-ui` call runs before any `sleep`, so when the an
 Single-shot assertion that an element with a given `AXLabel` is present in the current AXTree. The most generic presence probe — covers the "did Settings render?" / "did the modal dismiss?" / "did the toast appear?" cases that don't fit the more specialized verify ops (which key off `AXUniqueId`, value, or selection).
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/verify_label_visible.sh "Settings"
-~/.claude/skills/ios-build-verify/scripts/verify_label_visible.sh "Done" --role Button
+<scripts>/verify_label_visible.sh "Settings"
+<scripts>/verify_label_visible.sh "Done" --role Button
 ```
 
 `--role <role>` (matched against the `type` field `axe describe-ui` returns) disambiguates when the same label appears across roles — a `Button` and a `StaticText` both labeled "Done," say.
@@ -492,7 +520,7 @@ Exit codes: `0` label present; `2` config missing, no argument, or malformed `--
 Focus a TextField and replace its contents with `<text>`. Resolves the "AXe `type` appends, doesn't replace" surface — the named-intent layer's job is to make "set this field to X" do what its name says.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/set_value.sh input_convert_month "7"
+<scripts>/set_value.sh input_convert_month "7"
 # → "set: input_convert_month = '7'"           on success (exit 0)
 # → "error: set ... failed read-back: ..."     on no-op write (exit 6)
 ```
@@ -508,9 +536,9 @@ Exit codes: `0` write confirmed (AXValue read back equals `$TEXT`); `2` config m
 Type text into a `TextField` / `TextEditor` regardless of whether the field has an `.accessibilityIdentifier()`. Two modes:
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/type_text.sh --id input_convert_month "7"
-~/.claude/skills/ios-build-verify/scripts/type_text.sh --xy 196,512 "wrong-answer"
-~/.claude/skills/ios-build-verify/scripts/type_text.sh --xy 196,512 --verify-target "Answer" --verify-role TextField "wrong-answer"
+<scripts>/type_text.sh --id input_convert_month "7"
+<scripts>/type_text.sh --xy 196,512 "wrong-answer"
+<scripts>/type_text.sh --xy 196,512 --verify-target "Answer" --verify-role TextField "wrong-answer"
 ```
 
 `--id` is a thin alias for `set_value.sh` — focuses by identifier, clears via Cmd+A, types, and read-back-verifies. Use when the field has an identifier; this path inherits all of `set_value.sh`'s exit codes (including exit 6 read-back mismatch with the four-cause hint).
@@ -528,7 +556,7 @@ Exit codes: in `--id` mode, all of `set_value.sh`'s codes are propagated. In `--
 End-to-end first-real-app smoke test: `build_app.sh` → `launch_app.sh` → `screenshot.sh smoke-launch` → for each `MAIN_TABS` entry, `tap_tab.sh` + `screenshot.sh smoke-tab-<name>` + per-tab assertion → `terminate_app.sh`. Each step emits `✓ <name>` on success or `✗ <name> (<reason>)` with a SKILL.md hint on failure. The script continues past per-tab failures so the operator gets a complete pass/fail rollup; build and launch failures are blocking and abort the run.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/smoke_test.sh
+<scripts>/smoke_test.sh
 # ✓ build
 # ✓ launch (FIRST_SCREEN_ID 'verb_browse_anchor' seen in 4s)
 # ✓ screenshot smoke-launch
@@ -650,8 +678,8 @@ A shipped `scripts/measure_tab_pill.sh` mechanizes path 1 — see below.
 Centroid-detection wrapper around an inline Python (Pillow) script. Takes a screenshot, detects the pill background via 16-level color quantization of the middle third of a tight icon-row y-band (default 0.92H–0.965H), masks pixels whose RGB differs from the modal bg by >40 in any channel as "icon," projects icon-pixel counts to a 1D x-histogram, splits clusters at zero-runs of ≥20 image pixels, and emits a count-weighted centroid per cluster as a `MAIN_TABS_COORDS=(...)` line. Modal-bg detection makes the algorithm light/dark-mode-agnostic without a hand-coded heuristic.
 
 ```bash
-~/.claude/skills/ios-build-verify/scripts/measure_tab_pill.sh                                              # takes a fresh screenshot
-~/.claude/skills/ios-build-verify/scripts/measure_tab_pill.sh --screenshot docs/screenshots/<existing>.png # analyze existing PNG
+<scripts>/measure_tab_pill.sh                                              # takes a fresh screenshot
+<scripts>/measure_tab_pill.sh --screenshot docs/screenshots/<existing>.png # analyze existing PNG
 ```
 
 Output is the `MAIN_TABS_COORDS=(...)` line on stdout (last line; callers can extract via `tail -1`); a `# detected N tab(s) ...` comment goes to stderr. Validated against AztecCal's 3-tab light-mode pill: detected centers `(115.0, 201.0, 286.8)` match the canonical shipped coords `(115, 201, 287)` to within sub-pixel precision. Validated against Konjugieren's 5-tab dark-mode pill: detected centers `(63.0, 132.4, 200.7, 269.3, 338.5)` show ~69pt even spacing — the geometric signature of a correct read. **Reproducible measurement requires the FIRST tab to be selected** (the typical state on a fresh launch); the iOS 26 pill widens the selected tab to make room for an inline label, so a non-first selected tab biases that cluster's centroid by ~5–10pt. Run `measure_tab_pill.sh` after a clean launch, not after navigating tabs.
@@ -742,7 +770,7 @@ Then launch verify-driven sessions with `SIMCTL_CHILD_DISABLE_TIPKIT=1`. The ski
 
 ```bash
 export SIMCTL_CHILD_DISABLE_TIPKIT=1
-~/.claude/skills/ios-build-verify/scripts/launch_app.sh
+<scripts>/launch_app.sh
 ```
 
 The same `SIMCTL_CHILD_*` mechanism documented under "iOS 26 Form-in-NavigationStack" applies — Apple strips the `SIMCTL_CHILD_` prefix and forwards the remainder into the launched process's environment.
@@ -819,7 +847,7 @@ This appears to be a real FBSimulatorControl / AXe limitation, not a SKILL.md pr
 
 ```bash
 # 1. Terminate any running instance (no-op-safe when nothing is running).
-~/.claude/skills/ios-build-verify/scripts/terminate_app.sh
+<scripts>/terminate_app.sh
 
 # 2. Recover the booted simulator's UDID (matches launch_app.sh's resolution path).
 UDID=$(xcrun simctl list devices booted | grep -oE '[0-9A-F-]{36}' | head -1)
@@ -831,10 +859,10 @@ xcrun simctl launch "$UDID" "$BUNDLE_ID" -- -<DefaultsKey> <value>
 # 4. Re-navigate to the screen that consumes the setting (simctl launch returns
 #    immediately without polling, so describe-ui / verify ops should wait for
 #    the relevant anchor to appear before driving further).
-~/.claude/skills/ios-build-verify/scripts/tap_tab.sh <tab-name> --verify-anchor <anchor-id>
+<scripts>/tap_tab.sh <tab-name> --verify-anchor <anchor-id>
 
 # 5. Confirm the state landed.
-~/.claude/skills/ios-build-verify/scripts/read_value.sh <toggle-id>
+<scripts>/read_value.sh <toggle-id>
 ```
 
 `$BUNDLE_ID` resolves from your sourced config; you don't need to substitute it explicitly when this runs from the project root and `.claude/ios-build-verify.config.sh` is already sourced (e.g., as part of a script that sources the config first). For one-off shell invocations, expand it: `xcrun simctl launch "$UDID" biz.joshadams.AztecCal -- -showSubtitle 0`. May 2026 Calculator3 walked this exact sequence end-to-end without consulting external resources.
