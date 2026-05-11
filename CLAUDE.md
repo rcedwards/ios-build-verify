@@ -11,7 +11,7 @@ The skill bundles two halves of the iOS agentic-coding loop. The build half pipe
 - `skills/ios-build-verify/data/coordinates.json` — per-project tab-pill coordinate data, edited per project.
 - `.claude-plugin/plugin.json` — plugin manifest. Bump `version` on release.
 - `.claude-plugin/marketplace.json` — marketplace listing.
-- `prompts/` — validation-session writeups; not loaded by the skill at runtime.
+- `backlog/` — validation-session writeups; not loaded by the skill at runtime.
 
 ## Runtime contract
 
@@ -25,7 +25,7 @@ The skill bundles two halves of the iOS agentic-coding loop. The build half pipe
 
 ## Common verify-half friction
 
-Every item below is a silent or near-silent failure mode that costs an agent real time on first encounter. Each is one-liner here; full treatment lives in SKILL.md and the validation writeups under `prompts/`.
+Every item below is a silent or near-silent failure mode that costs an agent real time on first encounter. Each is one-liner here; full treatment lives in SKILL.md and the validation writeups under `backlog/`.
 
 - **Logical points, not pixels.** `axe tap` / `axe swipe` / `axe describe-ui` take logical points; `xcrun simctl io <UDID> screenshot` writes pixels at the device's retina scale (3× on iPhone 17 / 17 Pro / 17 Plus). Divide screenshot pixel coords by the scale factor, or read a logical-point frame directly via `describe_ui.sh --point <x>,<y>`. Full treatment plus AXLabel-search recipe: SKILL.md "Coordinate space: logical points, not pixels."
 - **Empty AXTree on launch = modal gating.** `launch_app.sh` exit 5 with `children: []` means a modal (review prompt, onboarding, system alert, IAP paywall, custom permission primer) is gating describe-ui before `FIRST_SCREEN_ID` can be polled. The full-tree dump is empty; reach the dismiss button via `describe_ui.sh --point <x>,<y>`. See SKILL.md "Common first-real-app friction" item 6.
